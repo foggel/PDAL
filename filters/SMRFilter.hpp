@@ -65,20 +65,21 @@ private:
     virtual void addDimensions(PointLayoutPtr layout);
     virtual void prepared(PointTableRef table);
     virtual void ready(PointTableRef table);
-    virtual PointViewSet run(PointViewPtr view);
+    virtual void filter(PointView& view);
 
-    void classifyGround(PointViewPtr, std::vector<double>&);
+    void classifyGround(PointView&, PointIdList, std::vector<double>&);
     std::vector<int> createLowMask(std::vector<double> const&);
     std::vector<int> createNetMask();
     std::vector<int> createObjMask(std::vector<double> const&);
-    std::vector<double> createZImin(PointViewPtr view);
+    std::vector<double> createZImin(PointView& view, PointIdList);
     std::vector<double> createZInet(std::vector<double> const&,
                                     std::vector<int> const&);
-    std::vector<double> createZIpro(PointViewPtr, std::vector<double> const&,
+    std::vector<double> createZIpro(PointView&, PointIdList,
+                                    std::vector<double> const&,
                                     std::vector<int> const&,
                                     std::vector<int> const&,
                                     std::vector<int> const&);
-    void knnfill(PointViewPtr, std::vector<double>&);
+    void knnfill(PointView&, std::vector<double>&);
     std::vector<int> progressiveFilter(std::vector<double> const&, double,
                                        double);
 };

@@ -171,35 +171,40 @@ void SMRFilter::ready(PointTableRef table)
         throwError("Output directory '" + m_args->m_dir + "' does not exist");
 }
 
-PointViewSet SMRFilter::run(PointViewPtr view)
+void SMRFilter::filter(PointView& view)
 {
-    PointViewSet viewSet;
-    if (!view->size())
-        return viewSet;
+    PointIdList inlierIds(view.size());
+    std::iota(inlierIds.begin(), inlierIds.end(), 0);
 
     // Segment input view into ignored/kept views.
-    PointViewPtr ignoredView = view->makeNew();
-    PointViewPtr keptView = view->makeNew();
-    if (m_args->m_ignored.empty())
-        keptView->append(*view);
-    else
-        Segmentation::ignoreDimRanges(m_args->m_ignored, view, keptView,
-                                      ignoredView);
+    if (!m_args->m_ignored.empty())
+    {
+        PointIdList dimPassIds =
+            Segmentation::ignoreDimRanges(m_args->m_ignored, view);
+        PointIdList tmp;
+        std::set_intersection(inlierIds.begin(), inlierIds.end(),
+                              dimPassIds.begin(), dimPassIds.end(),
+                              std::back_inserter(tmp));
+        inlierIds.swap(tmp);
+    }
 
-    PointViewPtr syntheticView = keptView->makeNew();
-    PointViewPtr realView = keptView->makeNew();
-    Segmentation::ignoreClassBits(keptView, realView, syntheticView,
-                                  m_args->m_classbits);
+    PointIdList classBitIds =
+        Segmentation::ignoreClassBits(view, m_args->m_classbits);
+    PointIdList tmp;
+    std::set_intersection(inlierIds.begin(), inlierIds.end(),
+                          classBitIds.begin(), classBitIds.end(),
+                          std::back_inserter(tmp));
+    inlierIds.swap(tmp);
 
     // Check for 0's in ReturnNumber and NumberOfReturns
     bool nrOneZero(false);
     bool rnOneZero(false);
     bool nrAllZero(true);
     bool rnAllZero(true);
-    for (PointId i = 0; i < realView->size(); ++i)
+    for (PointRef p : view)
     {
-        uint8_t nr = realView->getFieldAs<uint8_t>(Id::NumberOfReturns, i);
-        uint8_t rn = realView->getFieldAs<uint8_t>(Id::ReturnNumber, i);
+        uint8_t nr = p.getFieldAs<uint8_t>(Id::NumberOfReturns);
+        uint8_t rn = p.getFieldAs<uint8_t>(Id::ReturnNumber);
         if ((nr == 0) && !nrOneZero)
             nrOneZero = true;
         if ((rn == 0) && !rnOneZero)
@@ -216,35 +221,36 @@ PointViewSet SMRFilter::run(PointViewPtr view)
                    "1.");
 
     // Segment kept view into two views
-    PointViewPtr inlierView = realView->makeNew();
-    PointViewPtr outlierView = realView->makeNew();
     if (nrAllZero && rnAllZero)
     {
         log()->get(LogLevel::Warning)
             << "Both NumberOfReturns and ReturnNumber are filled with 0's. "
                "Proceeding without any further return filtering.\n";
-        inlierView->append(*realView);
     }
     else
     {
-        Segmentation::segmentReturns(realView, inlierView, outlierView,
-                                     m_args->m_returns);
-        ignoredView->append(*outlierView);
+        PointIdList returnIds =
+            Segmentation::segmentReturns(view, m_args->m_returns);
+        PointIdList tmp;
+        std::set_intersection(inlierIds.begin(), inlierIds.end(),
+                              returnIds.begin(), returnIds.end(),
+                              std::back_inserter(tmp));
+        inlierIds.swap(tmp);
     }
 
-    if (!inlierView->size())
+    if (!inlierIds.size())
     {
         throwError("No returns to process.");
     }
 
     // Classify remaining points with value of 1. SMRF processing will mark
     // ground returns as 2.
-    for (PointId i = 0; i < inlierView->size(); ++i)
-        inlierView->setField(Id::Classification, i, ClassLabel::Unclassified);
+    for (PointId const& i : inlierIds)
+        view.setField(Id::Classification, i, ClassLabel::Unclassified);
 
-    m_srs = inlierView->spatialReference();
+    m_srs = view.spatialReference();
 
-    inlierView->calculateBounds(m_bounds);
+    view.calculateBounds(m_bounds);
     m_cols = static_cast<int>(
         ((m_bounds.maxx - m_bounds.minx) / m_args->m_cell) + 1);
     m_rows = static_cast<int>(
@@ -255,7 +261,7 @@ PointViewSet SMRFilter::run(PointViewPtr view)
             "cell size.\n";
 
     // Create raster of minimum Z values per element.
-    std::vector<double> ZImin = createZImin(inlierView);
+    std::vector<double> ZImin = createZImin(view, inlierIds);
 
     // Create raster mask of pixels containing low outlier points.
     std::vector<int> Low = createLowMask(ZImin);
@@ -275,25 +281,15 @@ PointViewSet SMRFilter::run(PointViewPtr view)
     // original ZImin (not ZInet), however the net cut mask will still force
     // interpolation at these pixels.
     std::vector<double> ZIpro =
-        createZIpro(inlierView, ZImin, Low, isNetCell, Obj);
+        createZIpro(view, inlierIds, ZImin, Low, isNetCell, Obj);
 
     // Classify ground returns by comparing elevation values to the provisional
     // DEM.
-    classifyGround(inlierView, ZIpro);
-
-    PointViewPtr outView = view->makeNew();
-    // ignoredView is appended to the output untouched.
-    outView->append(*ignoredView);
-    outView->append(*syntheticView);
-    // inlierView is appended to the output, the only PointView whose
-    // classifications may have been altered.
-    outView->append(*inlierView);
-    viewSet.insert(outView);
-
-    return viewSet;
+    classifyGround(view, inlierIds, ZIpro);
 }
 
-void SMRFilter::classifyGround(PointViewPtr view, std::vector<double>& ZIpro)
+void SMRFilter::classifyGround(PointView& view, PointIdList ids,
+                               std::vector<double>& ZIpro)
 {
     // "While many authors use a single value for the elevation threshold, we
     // suggest that a second parameter be used to increase the threshold on
@@ -348,11 +344,11 @@ void SMRFilter::classifyGround(PointViewPtr view, std::vector<double>& ZIpro)
 
     point_count_t ng(0);
     point_count_t g(0);
-    for (PointId i = 0; i < view->size(); ++i)
+    for (PointId i : ids)
     {
-        double x = view->getFieldAs<double>(Id::X, i);
-        double y = view->getFieldAs<double>(Id::Y, i);
-        double z = view->getFieldAs<double>(Id::Z, i);
+        double x = view.getFieldAs<double>(Id::X, i);
+        double y = view.getFieldAs<double>(Id::Y, i);
+        double z = view.getFieldAs<double>(Id::Z, i);
 
         int c = static_cast<int>(floor((x - m_bounds.minx) / m_args->m_cell));
         int r = static_cast<int>(floor((y - m_bounds.miny) / m_args->m_cell));
@@ -381,15 +377,15 @@ void SMRFilter::classifyGround(PointViewPtr view, std::vector<double>& ZIpro)
         if (std::fabs(ZIpro[cell] - z) > thresh(r, c))
         {
             ng++;
-            view->setField(Id::Classification, i, ClassLabel::Unclassified);
+            view.setField(Id::Classification, i, ClassLabel::Unclassified);
         }
         else
         {
             g++;
-            view->setField(Id::Classification, i, ClassLabel::Ground);
+            view.setField(Id::Classification, i, ClassLabel::Ground);
         }
     }
-    double p(100.0 * double(ng) / double(view->size()));
+    double p(100.0 * double(ng) / double(view.size()));
     log()->floatPrecision(2);
     log()->get(LogLevel::Debug) << "\t" << g << " ground points"
                                 << "\t" << ng << " non-ground points"
@@ -472,7 +468,7 @@ std::vector<int> SMRFilter::createObjMask(std::vector<double> const& ZImin)
     return ObjV;
 }
 
-std::vector<double> SMRFilter::createZImin(PointViewPtr view)
+std::vector<double> SMRFilter::createZImin(PointView& view, PointIdList ids)
 {
     // "As with many other ground filtering algorithms, the first step is
     // generation of ZImin from the cell size parameter and the extent of the
@@ -480,11 +476,11 @@ std::vector<double> SMRFilter::createZImin(PointViewPtr view)
     std::vector<double> ZIminV(m_rows * m_cols,
                                std::numeric_limits<double>::quiet_NaN());
 
-    for (PointId i = 0; i < view->size(); ++i)
+    for (PointId i : ids)
     {
-        double x = view->getFieldAs<double>(Id::X, i);
-        double y = view->getFieldAs<double>(Id::Y, i);
-        double z = view->getFieldAs<double>(Id::Z, i);
+        double x = view.getFieldAs<double>(Id::X, i);
+        double y = view.getFieldAs<double>(Id::Y, i);
+        double z = view.getFieldAs<double>(Id::Z, i);
 
         int c = static_cast<int>(floor((x - m_bounds.minx) / m_args->m_cell));
         int r = static_cast<int>(floor((y - m_bounds.miny) / m_args->m_cell));
@@ -559,7 +555,7 @@ std::vector<double> SMRFilter::createZInet(std::vector<double> const& ZImin,
     return ZInetV;
 }
 
-std::vector<double> SMRFilter::createZIpro(PointViewPtr view,
+std::vector<double> SMRFilter::createZIpro(PointView& view, PointIdList ids,
                                            std::vector<double> const& ZImin,
                                            std::vector<int> const& Low,
                                            std::vector<int> const& isNetCell,
@@ -599,7 +595,7 @@ std::vector<double> SMRFilter::createZIpro(PointViewPtr view,
 }
 
 // Fill voids with the average of eight nearest neighbors.
-void SMRFilter::knnfill(PointViewPtr view, std::vector<double>& cz)
+void SMRFilter::knnfill(PointView& view, std::vector<double>& cz)
 {
     //ABELL - This potentially means moving a lot of data from the raster
     //  to the temporary view.  This can be improved by either
@@ -609,7 +605,7 @@ void SMRFilter::knnfill(PointViewPtr view, std::vector<double>& cz)
 
     // Create a temporary PointView that encodes our raster values so that we
     // can construct a 2D KDIndex and perform nearest neighbor searches.
-    PointViewPtr temp = view->makeNew();
+    PointViewPtr temp = view.makeNew();
     PointId i(0);
     for (int c = 0; c < m_cols; ++c)
     {

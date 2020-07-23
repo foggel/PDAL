@@ -42,6 +42,7 @@
 #include "DimRange.hpp"
 #include "Segmentation.hpp"
 
+#include <numeric>
 #include <vector>
 
 namespace pdal
@@ -117,6 +118,18 @@ void ignoreDimRanges(std::vector<DimRange>& ranges, PointViewPtr input,
     }
 }
 
+PointIdList ignoreDimRanges(std::vector<DimRange>& ranges, PointView& input)
+{
+    std::sort(ranges.begin(), ranges.end());
+    PointIdList ids;
+    for (PointRef point : input)
+    {
+        if (!DimRange::pointPasses(ranges, point))
+            ids.push_back(point.pointId());
+    }
+    return ids;
+}
+
 void ignoreClassBits(PointViewPtr input, PointViewPtr keep,
                      PointViewPtr ignore, PointClasses classbits)
 {
@@ -137,6 +150,30 @@ void ignoreClassBits(PointViewPtr input, PointViewPtr keep,
                 keep->appendPoint(*input, i);
         }
     }
+}
+
+PointIdList ignoreClassBits(PointView& input, PointClasses classbits)
+{
+    using namespace Dimension;
+
+    PointIdList ids;
+
+    if (classbits.isNone())
+    {
+        // return all PointIds
+        ids.resize(input.size());
+        std::iota(ids.begin(), ids.end(), 0);
+    }
+    else
+    {
+        for (PointRef p : input)
+        {
+            uint8_t c = p.getFieldAs<uint8_t>(Id::Classification);
+            if (!(classbits.bits() & c))
+                ids.push_back(p.pointId());
+        }
+    }
+    return ids;
 }
 
 void segmentLastReturns(PointViewPtr input, PointViewPtr last,
@@ -202,6 +239,55 @@ void segmentReturns(PointViewPtr input, PointViewPtr first,
             }
         }
     }
+}
+
+PointIdList segmentReturns(PointView& input, StringList returns)
+{
+    using namespace Dimension;
+
+    PointIdList ids;
+
+    bool returnFirst = false;
+    bool returnIntermediate = false;
+    bool returnLast = false;
+    bool returnOnly = false;
+
+    if (!returns.size())
+    {
+        // return all PointIds
+        ids.resize(input.size());
+        std::iota(ids.begin(), ids.end(), 0);
+    }
+    else
+    {
+        for (auto& r : returns)
+        {
+            Utils::trim(r);
+            if (r == "first")
+                returnFirst = true;
+            else if (r == "intermediate")
+                returnIntermediate = true;
+            else if (r == "last")
+                returnLast = true;
+            else if (r == "only")
+                returnOnly = true;
+        }
+
+        for (PointRef p : input)
+        {
+            uint8_t rn = p.getFieldAs<uint8_t>(Id::ReturnNumber);
+            uint8_t nr = p.getFieldAs<uint8_t>(Id::NumberOfReturns);
+
+            if ((((rn == 1) && (nr > 1)) && returnFirst) ||
+                (((rn > 1) && (rn < nr)) && returnIntermediate) ||
+                (((rn == nr) && (nr > 1)) && returnLast) ||
+                ((nr == 1) && returnOnly))
+            {
+                ids.push_back(p.pointId());
+            }
+        }
+    }
+    return ids;
 }
 
 PointIdList farthestPointSampling(PointView& view, point_count_t count)

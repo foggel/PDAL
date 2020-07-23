@@ -156,11 +156,17 @@ PDAL_DLL std::deque<PointIdList> extractClusters(PointView& view, uint64_t min_p
 
 PDAL_DLL void ignoreDimRange(DimRange dr, PointViewPtr input, PointViewPtr keep,
                              PointViewPtr ignore);
+
 PDAL_DLL void ignoreDimRanges(std::vector<DimRange>& ranges,
     PointViewPtr input, PointViewPtr keep, PointViewPtr ignore);
 
+PDAL_DLL PointIdList ignoreDimRanges(std::vector<DimRange>& ranges,
+                                     PointView& input);
+
 PDAL_DLL void ignoreClassBits(PointViewPtr input, PointViewPtr keep,
                               PointViewPtr ignore, PointClasses classbits);
+
+PDAL_DLL PointIdList ignoreClassBits(PointView& input, PointClasses classbits);
 
 PDAL_DLL void segmentLastReturns(PointViewPtr input, PointViewPtr last,
                                  PointViewPtr other);
@@ -168,6 +174,7 @@ PDAL_DLL void segmentLastReturns(PointViewPtr input, PointViewPtr last,
 PDAL_DLL void segmentReturns(PointViewPtr input, PointViewPtr first,
                              PointViewPtr second, StringList returns);
 
+PDAL_DLL PointIdList segmentReturns(PointView& input, StringList returns);
 
 PDAL_DLL PointIdList farthestPointSampling(PointView& view, point_count_t count);
 
